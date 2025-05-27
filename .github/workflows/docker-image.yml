@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
 
+env:
+  POSTGRES_DB: kubsu
+  POSTGRES_USER: kubsu
+  POSTGRES_PASSWORD: kubsu
+  APP_PORT: 8025
+
 jobs:
   build-test-deploy:
     runs-on: self-hosted
@@ -11,13 +17,13 @@ jobs:
       postgres:
         image: postgres:14
         env:
-          POSTGRES_DB: kubsu
-          POSTGRES_USER: kubsu
-          POSTGRES_PASSWORD: kubsu
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U kubsu"
+          --health-cmd "pg_isready -U ${{ env.POSTGRES_USER }}"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -28,29 +34,30 @@ jobs:
 
       - name: Wait for Postgres
         run: |
-          until pg_isready -h localhost -p 5432 -U kubsu; do
+          until pg_isready -h localhost -p 5432 -U ${{ env.POSTGRES_USER }}; do
             echo "Waiting for Postgres..."
             sleep 2
           done
 
       - name: Initialize DB from dump
-        run: psql postgresql://kubsu:kubsu@localhost:5432/kubsu -f kubsu/dump.sql
+        run: |
+          psql postgresql://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:5432/${{ env.POSTGRES_DB }} \
+            -f kubsu/dump.sql
 
-      - name: Build Docker image
-        run: docker build -t myapp:test .
-
-      - name: Build test image
-        run: docker build --target builder -t myapp:test .
+      - name: Build Docker images
+        run: |
+          docker build -t myapp:test .
+          docker build --target builder -t myapp:builder .
 
       - name: Run tests
         run: |
           docker run --rm \
             --network host \
             -e PYTHONPATH=/app \
-            myapp:test \
-            pytest tests
+            myapp:builder \
+            pytest tests/
 
-      - name: Build prod image
+      - name: Build production image
         run: docker build -t myapp:latest .
 
       - name: Set up SSH
@@ -58,22 +65,43 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Deploy to remote server
+      - name: Deploy to production
         run: |
-          # Сохраняем образ и передаем на сервер
-          docker save myapp:latest | \
-            ssh -o StrictHostKeyChecking=no \
-                -p ${{ secrets.SSH_PORT }} \
-                ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "podman load && \
-             podman tag myapp:latest myapp:latest && \
-             # Останавливаем и удаляем старый контейнер, если существует
-             (podman stop myapp || true) && \
-             (podman rm myapp || true) && \
-             # Запускаем новый контейнер
-             podman run -d \
-               --name myapp \
-               --network host \
-               --replace \
-               myapp:latest \
-               uvicorn src.main:app --host 0.0.0.0 --port 8025"
+          # Package and transfer image
+          docker save myapp:latest > myapp.tar
+          scp -o StrictHostKeyChecking=no \
+              -P ${{ secrets.SSH_PORT }} \
+              myapp.tar \
+              ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
+          rm myapp.tar
+
+          # Execute deployment commands
+          ssh -o StrictHostKeyChecking=no \
+              -p ${{ secrets.SSH_PORT }} \
+              ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+              "set -e && \
+               echo 'Loading image...' && \
+               podman load -i /tmp/myapp.tar && \
+               rm -f /tmp/myapp.tar && \
+               podman tag myapp:latest myapp:latest && \
+               \
+               echo 'Stopping existing container...' && \
+               (podman stop -t 2 myapp || true) && \
+               (podman rm -f myapp || true) && \
+               \
+               echo 'Cleaning up...' && \
+               podman image prune -f && \
+               \
+               echo 'Starting new container...' && \
+               podman run -d \
+                 --name myapp \
+                 --network host \
+                 --restart unless-stopped \
+                 --health-cmd 'curl -f http://localhost:${{ env.APP_PORT }}/health || exit 1' \
+                 --health-interval 30s \
+                 --health-timeout 5s \
+                 --health-retries 3 \
+                 myapp:latest \
+                 uvicorn src.main:app --host 0.0.0.0 --port ${{ env.APP_PORT }} && \
+               \
+               echo 'Deployment complete!'"
