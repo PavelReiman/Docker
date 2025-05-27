@@ -9,6 +9,7 @@ env:
   POSTGRES_USER: kubsu
   POSTGRES_PASSWORD: kubsu
   APP_PORT: 8025
+  TEMP_DIR: /home/${{ secrets.SSH_USER }}/docker_temp
 
 jobs:
   build-test-deploy:
@@ -18,7 +19,7 @@ jobs:
       postgres:
         image: postgres:14
         env:
-          POSTGRES_DB: kubsu  # Используем прямое значение вместо переменной
+          POSTGRES_DB: kubsu
           POSTGRES_USER: kubsu
           POSTGRES_PASSWORD: kubsu
         ports:
@@ -66,34 +67,47 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
+      - name: Prepare remote server
+        run: |
+          ssh -o StrictHostKeyChecking=no \
+              -p ${{ secrets.SSH_PORT }} \
+              ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+              "mkdir -p ${{ env.TEMP_DIR }} && chmod 777 ${{ env.TEMP_DIR }}"
+
       - name: Deploy to production
         run: |
-          # Package and transfer image
+          # Package image
           docker save myapp:latest > myapp.tar
+          
+          # Transfer image
           scp -o StrictHostKeyChecking=no \
               -P ${{ secrets.SSH_PORT }} \
               myapp.tar \
-              ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/
+              ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ env.TEMP_DIR }}/myapp.tar
+          
+          # Remove local archive
           rm myapp.tar
 
-          # Execute deployment commands
+          # Execute deployment
           ssh -o StrictHostKeyChecking=no \
               -p ${{ secrets.SSH_PORT }} \
               ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
               "set -e && \
-               echo 'Loading image...' && \
-               podman load -i /tmp/myapp.tar && \
-               rm -f /tmp/myapp.tar && \
+               echo '=== Loading Docker image ===' && \
+               podman load -i ${{ env.TEMP_DIR }}/myapp.tar && \
+               \
+               echo '=== Tagging image ===' && \
                podman tag myapp:latest myapp:latest && \
                \
-               echo 'Stopping existing container...' && \
+               echo '=== Stopping old container ===' && \
                (podman stop -t 2 myapp || true) && \
                (podman rm -f myapp || true) && \
                \
-               echo 'Cleaning up...' && \
+               echo '=== Cleaning up ===' && \
                podman image prune -f && \
+               rm -f ${{ env.TEMP_DIR }}/myapp.tar && \
                \
-               echo 'Starting new container...' && \
+               echo '=== Starting new container ===' && \
                podman run -d \
                  --name myapp \
                  --network host \
@@ -105,4 +119,4 @@ jobs:
                  myapp:latest \
                  uvicorn src.main:app --host 0.0.0.0 --port ${{ env.APP_PORT }} && \
                \
-               echo 'Deployment complete!'"
+               echo '=== Deployment successful ==='"
