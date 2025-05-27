@@ -50,7 +50,6 @@ jobs:
             myapp:test \
             pytest tests
 
-
       - name: Build prod image
         run: docker build -t myapp:latest .
 
@@ -61,14 +60,20 @@ jobs:
 
       - name: Deploy to remote server
         run: |
+          # Сохраняем образ и передаем на сервер
           docker save myapp:latest | \
             ssh -o StrictHostKeyChecking=no \
                 -p ${{ secrets.SSH_PORT }} \
                 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "podman load && \
              podman tag myapp:latest myapp:latest && \
+             # Останавливаем и удаляем старый контейнер, если существует
+             (podman stop myapp || true) && \
+             (podman rm myapp || true) && \
+             # Запускаем новый контейнер
              podman run -d \
                --name myapp \
                --network host \
+               --replace \
                myapp:latest \
                uvicorn src.main:app --host 0.0.0.0 --port 8025"
