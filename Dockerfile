@@ -12,13 +12,9 @@ COPY . .
 # Stage 2: Production image
 FROM python:3.14.0b2-alpine3.21
 
-RUN useradd -m appuser
-
 WORKDIR /app
 COPY --from=builder /app /app
 
 RUN pip install --no-cache-dir .
-
-USER appuser
 
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
