@@ -10,7 +10,7 @@ RUN pip install .[test]
 COPY . .
 
 # Stage 2: Production image
-FROM python:3.11-slim
+FROM python:3.14.0b2-alpine3.21
 
 RUN useradd -m appuser
 
