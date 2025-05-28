@@ -66,7 +66,7 @@ ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_
 --
 
 COPY public.users (id, name) FROM stdin;
-18	John Doe
+18	Pavel Reiman
 \.
 
 
