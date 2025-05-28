@@ -10,7 +10,7 @@ RUN pip install .[test]
 COPY . .
 
 # Stage 2: Production image
-FROM python:3.14.0b2-alpine3.21
+FROM python:3.14-rc-alpine3.20
 
 WORKDIR /app
 COPY --from=builder /app /app
